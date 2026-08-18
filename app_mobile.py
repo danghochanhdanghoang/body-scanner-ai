@@ -140,7 +140,7 @@ if uploaded_file is not None:
 
         st.markdown("---")
         st.subheader("🎯 Bước 2: Kết quả đo đạc")
-        st.image(annotated_image, channels="RGB", use_container_width=True)
+        st.image(annotated_image, channels="RGB", use_column_width=True)
 
         st.markdown("### 📊 Thông số chi tiết (Pixel)")
         c1, c2, c3 = st.columns(3)
