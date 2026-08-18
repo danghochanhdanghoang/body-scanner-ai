@@ -9,7 +9,7 @@ st.set_page_config(page_title="AI Body Pixel Scanner", page_icon="📐", layout=
 st.title("📐 AI Quét Tỷ Lệ Cơ Thể (Pixel Perfect)")
 st.markdown("---")
 
-# 2. Khởi tạo MediaPipe (Kết hợp Pose để lấy trục và Segmentation để lấy viền)
+# 2. Khởi tạo MediaPipe
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5)
 
@@ -38,9 +38,21 @@ def find_edges_from_center(mask, center_x, y):
         
     return left_x, right_x
 
-# 3. Khu vực xử lý chính
-uploaded_file = st.file_uploader("Tải ảnh toàn thân lên (JPG, PNG)", type=["jpg", "jpeg", "png"])
+# 3. Form nhập liệu (Chụp trực tiếp KHÔNG DÙNG BROWSER / Tải ảnh lên)
+st.subheader("📸 Bước 1: Chọn ảnh hoặc chụp trực tiếp")
+input_method = st.radio(
+    "Chọn phương thức nhập ảnh:",
+    ["Chụp ảnh trực tiếp (Camera)", "Tải ảnh từ thiết bị"]
+)
 
+uploaded_file = None
+if input_method == "Chụp ảnh trực tiếp (Camera)":
+    # Mở camera trực tiếp trên màn hình, không qua popup file browser
+    uploaded_file = st.camera_input("Đứng thẳng, dang nhẹ tay và chụp!")
+else:
+    uploaded_file = st.file_uploader("Chọn ảnh có sẵn (JPG, PNG)", type=["jpg", "jpeg", "png"])
+
+# 4. Khu vực xử lý chính
 if uploaded_file is not None:
     # Đọc ảnh và chuyển sang Numpy array
     image = Image.open(uploaded_file).convert("RGB")
@@ -48,8 +60,9 @@ if uploaded_file is not None:
     h, w, _ = image_np.shape
 
     # Chạy AI
-    pose_results = pose.process(image_np)
-    seg_results = segmentation.process(image_np)
+    with st.spinner("AI đang quét viền cơ thể..."):
+        pose_results = pose.process(image_np)
+        seg_results = segmentation.process(image_np)
 
     if pose_results.pose_landmarks and seg_results.segmentation_mask is not None:
         # Tạo mặt nạ nhị phân (người = True, nền = False)
@@ -68,12 +81,11 @@ if uploaded_file is not None:
         x_sh_center = (l_sh.x + r_sh.x) / 2 * w
         x_hip_center = (l_hip.x + r_hip.x) / 2 * w
 
-        # --- THUẬT TOÁN QUÉT VAI, EO, HÔNG ---
+        # --- THUẬT TOÁN QUÉT VAI, EO, HÔNG (PIXEL) ---
         
         # 1. TÌM VAI (MAX width quanh khu vực vai)
         best_sh_w = -1
         pts_sh = None
-        # Quét từ hơi trên vai xuống hơi dưới vai
         for y in range(max(0, y_sh - int(h*0.05)), min(h, y_sh + int(h*0.05))):
             lx, rx = find_edges_from_center(mask, x_sh_center, y)
             if lx is not None and rx is not None:
@@ -82,12 +94,10 @@ if uploaded_file is not None:
                     best_sh_w = width
                     pts_sh = ((lx, y), (rx, y))
 
-        # 2. TÌM EO (MIN width giữa vai và hông)
+        # 2. TÌM EO (MIN width giữa ngực và bụng)
         best_ws_w = float('inf')
         pts_ws = None
-        # Quét từ dưới ngực đến trên rốn
         for y in range(y_sh + int(h*0.12), y_hip - int(h*0.05)):
-            # Tính trục X tịnh tiến dần từ vai xuống hông (chống lệch nếu người đứng nghiêng)
             progress = (y - y_sh) / (y_hip - y_sh + 1e-6)
             current_center_x = x_sh_center + (x_hip_center - x_sh_center) * progress
             
@@ -98,10 +108,9 @@ if uploaded_file is not None:
                     best_ws_w = width
                     pts_ws = ((lx, y), (rx, y))
 
-        # 3. TÌM HÔNG (MAX width quanh khu vực hông/mông)
+        # 3. TÌM HÔNG (MAX width quanh khu vực mông)
         best_hp_w = -1
         pts_hp = None
-        # Quét từ ngang hông xuống dưới đùi một chút
         for y in range(y_hip - int(h*0.02), min(h, y_hip + int(h*0.15))):
             lx, rx = find_edges_from_center(mask, x_hip_center, y)
             if lx is not None and rx is not None:
@@ -110,7 +119,7 @@ if uploaded_file is not None:
                     best_hp_w = width
                     pts_hp = ((lx, y), (rx, y))
 
-        # --- VẼ LÊN ẢNH ĐỂ THỂ HIỆN TRỰC QUAN ĐIỂM CHUẨN ---
+        # --- VẼ LÊN ẢNH ĐỂ THỂ HIỆN TRỰC QUAN ---
         annotated_image = image_np.copy()
         
         def draw_measurement(img, pts, color, label):
@@ -121,24 +130,23 @@ if uploaded_file is not None:
                 # Vẽ 2 điểm ngoài cùng (chấm tròn to rõ)
                 cv2.circle(img, p1, max(4, int(w*0.015)), color, -1)
                 cv2.circle(img, p2, max(4, int(w*0.015)), color, -1)
-                # Ghi text (Pixel)
+                # Ghi text
                 text_pos = (int((p1[0]+p2[0])/2) - 40, p1[1] - 10)
-                cv2.putText(img, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, max(0.5, w*0.001), color, 2)
+                cv2.putText(img, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, max(0.5, w*0.0015), color, max(1, int(w*0.003)))
 
-        draw_measurement(annotated_image, pts_sh, (255, 50, 50), f"VAI")   # Đỏ / Xanh dương tùy hệ màu cv2
-        draw_measurement(annotated_image, pts_ws, (50, 255, 50), f"EO")    # Xanh lá
-        draw_measurement(annotated_image, pts_hp, (50, 50, 255), f"HONG")  # Đỏ
+        draw_measurement(annotated_image, pts_sh, (255, 50, 50), "VAI")   
+        draw_measurement(annotated_image, pts_ws, (50, 255, 50), "EO")    
+        draw_measurement(annotated_image, pts_hp, (50, 50, 255), "HONG")  
 
+        st.markdown("---")
+        st.subheader("🎯 Bước 2: Kết quả đo đạc")
         st.image(annotated_image, channels="RGB", use_container_width=True)
 
-        # Hiển thị số đo Pixel cụ thể
-        st.markdown("### 📊 Kết quả quét (Đơn vị: Pixel)")
+        st.markdown("### 📊 Thông số chi tiết (Pixel)")
         c1, c2, c3 = st.columns(3)
         c1.metric("🔴 Rộng Vai", f"{best_sh_w} px" if pts_sh else "N/A")
         c2.metric("🟢 Rộng Eo", f"{best_ws_w} px" if pts_ws else "N/A")
         c3.metric("🔵 Rộng Hông", f"{best_hp_w} px" if pts_hp else "N/A")
-        
-        st.info("💡 Điểm được chấm tròn trên hình là vị trí chính xác AI lấy để tính số đo.")
 
     else:
-        st.error("Không tìm thấy người trong ảnh. Vui lòng chụp rõ toàn thân.")
+        st.error("❌ Không tìm thấy người trong ảnh. Vui lòng chụp rõ toàn thân.")
