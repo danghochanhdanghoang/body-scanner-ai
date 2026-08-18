@@ -4,207 +4,174 @@ import mediapipe as mp
 import numpy as np
 import streamlit as st
 from PIL import Image
+from streamlit_drawable_canvas import st_canvas
 
 # 1. Cấu hình giao diện
-st.set_page_config(
-    page_title="AI Body Scanner Pro", page_icon="👗", layout="centered"
-)
-st.title("👗 AI Quét Dáng Pro (Chống Quét Lỏ)")
+st.set_page_config(page_title="AI Body Scanner Pro", page_icon="👗", layout="centered")
+st.title("👗 AI Quét Dáng & Kéo Thả Trực Tiếp")
 st.markdown("---")
 st.write(
-    "AI quét bị lỏ? Đừng lo! Số đo AI chỉ là tham khảo ban đầu. "
-    "**Sức mạnh thực sự nằm ở việc bạn tinh chỉnh số đo chính xác bên dưới** "
-    "để nhận gợi ý chuẩn 100%!"
+    "💡 **Mẹo:** AI đã vẽ sẵn 3 đường kẻ. Hãy **bấm vào từng đường kẻ trên ảnh**, "
+    "kéo các góc để co giãn sao cho vừa vặn nhất với cơ thể bạn. Số đo sẽ tự động nhảy!"
 )
 
-# 2. Khởi tạo MediaPipe Pose
+# 2. Khởi tạo MediaPipe
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5)
-mp_drawing = mp.solutions.drawing_utils
 
+# Hàm tạo object đường kẻ cho Canvas (Fabric.js)
+def create_fabric_line(x_center, y_center, width_px, color):
+    return {
+        "type": "line",
+        "left": x_center,
+        "top": y_center,
+        "width": width_px,
+        "height": 0,
+        "fill": "",
+        "stroke": color,
+        "strokeWidth": 6,  # Viền dày để dễ bấm trên điện thoại
+        "x1": -width_px / 2,
+        "y1": 0,
+        "x2": width_px / 2,
+        "y2": 0,
+        "originX": "center",
+        "originY": "center",
+        "scaleX": 1,
+        "scaleY": 1,
+        "angle": 0,
+        "transparentCorners": False,
+        "cornerColor": "white",
+        "cornerStrokeColor": "black",
+        "borderColor": "black",
+        "cornerSize": 18,  # Kích thước cục cầm kéo thả to ra
+    }
 
-# 3. Hàm tính khoảng cách pixel (Làm tròn số thực an toàn)
-def calculate_distance(p1, p2, width, height):
-  x1, y1 = p1.x * width, p1.y * height
-  x2, y2 = p2.x * width, p2.y * height
-  dist = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-  if math.isnan(dist) or dist < 0:
-    return 0
-  return dist
-
-
-# 4. Form nhập liệu
+# 3. Form nhập liệu
 uploaded_file = st.file_uploader(
-    "Bước 1: Chọn hoặc chụp ảnh toàn thân (JPG, PNG)", type=["jpg", "jpeg", "png"]
+    "1. Chọn hoặc chụp ảnh toàn thân (JPG, PNG)", type=["jpg", "jpeg", "png"]
 )
 real_height_cm = st.number_input(
-    "Nhập chiều cao thực tế của bạn (cm):",
-    min_value=100.0,
-    max_value=250.0,
-    value=160.0,
-    step=1.0,
+    "2. Nhập chiều cao thực tế của bạn (cm):",
+    min_value=100.0, max_value=250.0, value=160.0, step=1.0,
 )
 
 if uploaded_file is not None:
-  # Load and process image
-  image = Image.open(uploaded_file)
-  image_np = np.array(image)
-  image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-  height, width, _ = image_rgb.shape
+    # Xử lý ID ảnh để Canvas không bị reset khi kéo thả
+    file_id = f"{uploaded_file.file_id}"
+    if "img_id" not in st.session_state or st.session_state.img_id != file_id:
+        st.session_state.img_id = file_id
+        st.session_state.pixel_height = 0
+        st.session_state.initial_drawing = None
 
-  # Chạy MediaPipe Pose
-  results = pose.process(image_rgb)
+    # Load ảnh và Resize về chuẩn 600px để tính toán tỷ lệ không bị lệch
+    image = Image.open(uploaded_file).convert("RGB")
+    base_width = 600
+    w_percent = base_width / float(image.size[0])
+    h_size = int(float(image.size[1]) * float(w_percent))
+    image = image.resize((base_width, h_size), Image.Resampling.LANCZOS)
+    image_np = np.array(image)
 
-  if results.pose_landmarks:
-    # Vẽ landmarks lên ảnh để tham khảo
-    annotated_image = image_rgb.copy()
-    landmark_style = mp_drawing.DrawingSpec(
-        color=(0, 255, 0), thickness=2, circle_radius=2
+    # Nếu là ảnh mới up, chạy AI để khởi tạo 3 đường kẻ ban đầu
+    if st.session_state.initial_drawing is None:
+        results = pose.process(image_np)
+        
+        # Mặc định (Nếu AI không quét ra)
+        sx_c, sy_c, sh_w = base_width / 2, h_size * 0.25, base_width * 0.3
+        wx_c, wy_c, ws_w = base_width / 2, h_size * 0.40, base_width * 0.25
+        hx_c, hy_c, hp_w = base_width / 2, h_size * 0.55, base_width * 0.35
+        st.session_state.pixel_height = h_size * 0.8  # Giả định
+
+        if results.pose_landmarks:
+            lm = results.pose_landmarks.landmark
+            nose = lm[mp_pose.PoseLandmark.NOSE]
+            l_sh, r_sh = lm[mp_pose.PoseLandmark.LEFT_SHOULDER], lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            l_hip, r_hip = lm[mp_pose.PoseLandmark.LEFT_HIP], lm[mp_pose.PoseLandmark.RIGHT_HIP]
+            l_ank, r_ank = lm[mp_pose.PoseLandmark.LEFT_ANKLE], lm[mp_pose.PoseLandmark.RIGHT_ANKLE]
+
+            # Quy đổi điểm AI ra Pixel trên ảnh
+            sx_c = (l_sh.x + r_sh.x) / 2 * base_width
+            sy_c = (l_sh.y + r_sh.y) / 2 * h_size
+            hx_c = (l_hip.x + r_hip.x) / 2 * base_width
+            hy_c = (l_hip.y + r_hip.y) / 2 * h_size
+            wx_c, wy_c = sx_c, sy_c + (hy_c - sy_c) * 0.55 # Eo nằm giữa vai và hông
+            
+            # Tính độ rộng Pixel ban đầu (cộng hệ số bù)
+            sh_w = abs(l_sh.x - r_sh.x) * base_width * 1.25
+            hp_w = abs(l_hip.x - r_hip.x) * base_width * 1.20
+            ws_w = hp_w * 0.80
+
+            # Tính chiều cao Pixel để làm tỷ lệ quy đổi sang cm
+            mid_ankle_y = (l_ank.y + r_ank.y) / 2 * h_size
+            st.session_state.pixel_height = abs(mid_ankle_y - (nose.y * h_size)) * 1.15
+
+        # Lưu trạng thái vẽ ban đầu
+        st.session_state.initial_drawing = {
+            "version": "4.4.0",
+            "objects": [
+                create_fabric_line(sx_c, sy_c, sh_w, "#FF0000"),  # Đỏ = Vai
+                create_fabric_line(wx_c, wy_c, ws_w, "#00FF00"),  # Xanh lá = Eo
+                create_fabric_line(hx_c, hy_c, hp_w, "#0000FF"),  # Xanh dương = Hông
+            ]
+        }
+
+    # --- KHU VỰC VẼ TƯƠNG TÁC (CANVAS) ---
+    st.subheader("3. Tinh chỉnh trực tiếp trên ảnh")
+    st.markdown("🔴 **Đỏ:** Vai | 🟢 **Xanh lá:** Eo | 🔵 **Xanh dương:** Hông")
+    
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=6,
+        background_image=image,
+        update_streamlit=True,
+        height=h_size,
+        width=base_width,
+        drawing_mode="transform", # Cho phép click và kéo thả co giãn
+        initial_drawing=st.session_state.initial_drawing,
+        key="canvas",
     )
-    connection_style = mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2)
-    mp_drawing.draw_landmarks(
-        annotated_image,
-        results.pose_landmarks,
-        mp_pose.POSE_CONNECTIONS,
-        landmark_drawing_spec=landmark_style,
-        connection_drawing_spec=connection_style,
-    )
 
-    st.image(
-        annotated_image,
-        channels="RGB",
-        caption="Khung xương AI nhận diện (Tham khảo vị trí khớp xương)",
-        use_container_width=True,
-    )
+    # --- ĐỌC KẾT QUẢ KÉO THẢ TỪ CANVAS & QUY ĐỔI RA SỐ ĐO (CM) ---
+    cm_per_pixel = real_height_cm / st.session_state.pixel_height if st.session_state.pixel_height > 0 else 0.2
+    
+    final_sh = final_ws = final_hp = 30 # Giá trị mặc định chống lỗi
 
-    # --- ƯỚC TÍNH SỐ ĐO AI (LÀM TRÒN AN TOÀN TRONG KHOẢNG 1-200) ---
-    def clean_val(val):
-      if math.isnan(val) or val <= 0:
-        return 38
-      return int(max(1, min(200, round(val))))
+    if canvas_result.json_data is not None and "objects" in canvas_result.json_data:
+        for obj in canvas_result.json_data["objects"]:
+            if obj["type"] == "line":
+                # Lấy độ rộng mới sau khi người dùng kéo thả (scaleX)
+                length_px = math.sqrt((obj["width"] * obj["scaleX"])**2 + ((obj["height"] or 0) * obj["scaleY"])**2)
+                cm_val = int(length_px * cm_per_pixel)
+                
+                if obj["stroke"] == "#FF0000": final_sh = max(1, cm_val)
+                elif obj["stroke"] == "#00FF00": final_ws = max(1, cm_val)
+                elif obj["stroke"] == "#0000FF": final_hp = max(1, cm_val)
 
-    landmarks = results.pose_landmarks.landmark
-    nose = landmarks[mp_pose.PoseLandmark.NOSE]
-    left_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE]
-    right_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE]
-    left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-    right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-    left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP]
-    right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
-
-    # Tính chiều cao Pixel
-    mid_ankle_y = (left_ankle.y + right_ankle.y) / 2
-    pixel_height = abs(mid_ankle_y - nose.y) * height * 1.15
-    cm_per_pixel = real_height_cm / pixel_height if pixel_height > 0 else 0
-
-    # AI tính số đo thô (cộng hệ số bù độ dày thịt & quần áo)
-    raw_shoulder = (
-        calculate_distance(left_shoulder, right_shoulder, width, height)
-        * cm_per_pixel
-        * 1.25
-    )
-    raw_hip = (
-        calculate_distance(left_hip, right_hip, width, height)
-        * cm_per_pixel
-        * 1.20
-    )
-    raw_waist = raw_hip * 0.80
-
-    calc_shoulder = clean_val(raw_shoulder)
-    calc_waist = clean_val(raw_waist)
-    calc_hip = clean_val(raw_hip)
-
-    st.success(
-        "✅ AI đã quét và ước tính xong! Ghi nhận vị trí khớp xương."
-    )
-
-    # --- KHU VỰC TINH CHỈNH SỐ ĐO CHÍNH (KEY KHÔNG DÙNG ĐỂ TRÁNH XUNG ĐỘT STATE) ---
-    st.subheader("📏 Bước 2: Tinh chỉnh số đo RỘNG VAI / EO / HÔNG (cm)")
-    st.write(
-        "AI quét không chính xác độ rộng cơ thể? Hãy **nhập con số chuẩn xác nhất** vào ô này:"
-    )
-    col1, col2, col3 = st.columns(3)
-    with col1:
-      final_shoulder = st.number_input(
-          "Rộng Vai (cm)",
-          value=calc_shoulder,  # Số AI tính chỉ là giá trị khởi tạo
-          min_value=1,
-          max_value=200,
-          step=1,
-          key="ui_shoulder",  # Đặt key để Streamlit quản lý UI độc lập
-      )
-    with col2:
-      final_waist = st.number_input(
-          "Rộng Eo (cm)",
-          value=calc_waist,
-          min_value=1,
-          max_value=200,
-          step=1,
-          key="ui_waist",
-      )
-    with col3:
-      final_hip = st.number_input(
-          "Rộng Hông (cm)",
-          value=calc_hip,
-          min_value=1,
-          max_value=200,
-          step=1,
-          key="ui_hip",
-      )
-
-    # Hiển thị số đo hiện tại đang phân tích
     st.markdown("---")
-    st.markdown(
-        f"📊 **Số đo hiện tại:** Vai: **{final_shoulder}cm**, Eo: **{final_waist}cm**, Hông: **{final_hip}cm**"
-    )
+    st.markdown(f"### 📊 Số đo thực tế sau khi tinh chỉnh:")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Rộng Vai", f"{final_sh} cm")
+    col2.metric("Rộng Eo", f"{final_ws} cm")
+    col3.metric("Rộng Hông", f"{final_hp} cm")
 
-    # --- KẾT QUẢ PHÂN TÍCH & GỢI Ý ---
-    st.header("✨ Bước 3: Phân Tích Dáng Người & Gợi Ý Phối Đồ")
-    shape = "Chưa xác định"
-    advice = ""
+    # --- KẾT QUẢ PHÂN TÍCH ---
+    st.markdown("---")
+    st.header("✨ Bước 4: Phân Tích Dáng Người & Gợi Ý Phối Đồ")
 
-    if final_waist > final_shoulder and final_waist > final_hip:
-      shape = "Dáng Quả Táo (Apple)"
-      advice = (
-          "- **Đặc điểm:** Vòng 2 là vòng lớn nhất.\n"
-          "- **Nên mặc:** Áo cổ chữ V sâu, đầm chữ A, quần cạp cao, thắt lưng nhẹ dưới chân ngực.\n"
-          "- **Tránh mặc:** Áo bó sát vòng 2, trang phục oversize rộng thùng thình."
-      )
-    elif final_hip > final_shoulder * 1.05:
-      shape = "Dáng Quả Lê (Pear)"
-      advice = (
-          "- **Đặc điểm:** Hông rõ rệt là vòng lớn nhất, vai nhỏ hơn.\n"
-          "- **Nên mặc:** Áo trễ vai, bèo nhún phần ngực, quần ống suông/tối màu, chân váy chữ A.\n"
-          "- **Tránh mặc:** Quần skinny sáng màu, váy xếp ly xòe quá rộng làm lộ hông to."
-      )
-    elif final_shoulder > final_hip * 1.05:
-      shape = "Dáng Tam Giác Ngược"
-      advice = (
-          "- **Đặc điểm:** Vai rõ rệt lớn nhất, hông nhỏ.\n"
-          "- **Nên mặc:** Chân váy chữ A, váy xòe bồng, quần ống rộng, áo cổ chữ V đơn giản.\n"
-          "- **Tránh mặc:** Áo độn vai, áo trễ vai ngang, cổ thuyền bản to."
-      )
-    elif abs(final_shoulder - final_hip) < (
-        final_shoulder * 0.08
-    ) and final_waist < (final_hip * 0.80):
-      shape = "Dáng Đồng Hồ Cát (Hourglass)"
-      advice = (
-          "- **Đặc điểm:** Vai và Hông tương đương, Vòng Eo nhỏ rõ rệt.\n"
-          "- **Nên mặc:** Đầm ôm body, áo croptop, quần/váy cạp cao tôn eo, thắt lưng làm điểm nhấn.\n"
-          "- **Tránh mặc:** Quần áo oversize rộng thùng thình làm giấu đi đường cong."
-      )
+    if final_ws > final_sh and final_ws > final_hp:
+        shape = "Dáng Quả Táo (Apple)"
+        advice = "- **Nên mặc:** Áo cổ chữ V sâu, đầm chữ A, quần cạp cao.\n- **Tránh mặc:** Áo bó sát vòng 2."
+    elif final_hp > final_sh * 1.05:
+        shape = "Dáng Quả Lê (Pear)"
+        advice = "- **Nên mặc:** Áo trễ vai, bèo nhún phần ngực, quần ống suông/tối màu.\n- **Tránh mặc:** Quần skinny sáng màu."
+    elif final_sh > final_hp * 1.05:
+        shape = "Dáng Tam Giác Ngược"
+        advice = "- **Nên mặc:** Váy chữ A, váy xòe, quần ống rộng.\n- **Tránh mặc:** Áo độn vai, áo trễ vai."
+    elif abs(final_sh - final_hp) < (final_sh * 0.08) and final_ws < (final_hp * 0.80):
+        shape = "Dáng Đồng Hồ Cát (Hourglass)"
+        advice = "- **Nên mặc:** Đầm ôm body, áo croptop, quần cạp cao tôn eo.\n- **Tránh mặc:** Quần áo oversize rộng thùng thình."
     else:
-      shape = "Dáng Chữ Nhật (Rectangle)"
-      advice = (
-          "- **Đặc điểm:** Vai, Eo, Hông tương đương nhau.\n"
-          "- **Nên mặc:** Áo có điểm nhấn ở eo (thắt nơ, đai), váy xòe, họa tiết nổi bật phần trên/dưới.\n"
-          "- **Tránh mặc:** Trang phục suông tuột từ trên xuống dưới."
-      )
+        shape = "Dáng Chữ Nhật (Rectangle)"
+        advice = "- **Nên mặc:** Áo có điểm nhấn ở eo, váy xòe bồng bềnh.\n- **Tránh mặc:** Trang phục suông tuột."
 
     st.subheader(f"📍 Vóc dáng của bạn: **{shape}**")
     st.markdown(advice)
-
-  else:
-    st.error(
-        "❌ Không tìm thấy người trong ảnh. Vui lòng chụp rõ toàn thân và thử lại!"
-    )
