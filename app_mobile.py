@@ -78,15 +78,15 @@ if uploaded_file is not None:
         
         st.success("✅ Đã quét xong! Vui lòng tinh chỉnh lại số đo bên dưới nếu AI nhận diện sai do quần áo.")
         
-        # --- KHU VỰC NGƯỜI DÙNG TINH CHỈNH SỐ ĐO ---
+       # --- KHU VỰC NGƯỜI DÙNG TINH CHỈNH SỐ ĐO ---
         st.subheader("📏 Tinh chỉnh số đo (cm)")
         col1, col2, col3 = st.columns(3)
         with col1:
-            final_shoulder = st.number_input("Rộng Vai", value=float(ai_shoulder_cm), min_value=10.0, max_value=100.0, step=1.0)
+            final_shoulder = st.number_input("Rộng Vai", value=int(ai_shoulder_cm), min_value=10, max_value=150, step=1)
         with col2:
-            final_waist = st.number_input("Rộng Eo", value=float(ai_waist_cm), min_value=10.0, max_value=100.0, step=1.0)
+            final_waist = st.number_input("Rộng Eo", value=int(ai_waist_cm), min_value=10, max_value=150, step=1)
         with col3:
-            final_hip = st.number_input("Rộng Hông", value=float(ai_hip_cm), min_value=10.0, max_value=100.0, step=1.0)
+            final_hip = st.number_input("Rộng Hông", value=int(ai_hip_cm), min_value=10, max_value=150, step=1)
 
         # --- PHÂN TÍCH VÓC DÁNG & GỢI Ý ---
         st.markdown("---")
