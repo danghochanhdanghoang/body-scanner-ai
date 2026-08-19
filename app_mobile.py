@@ -1,152 +1,134 @@
-import cv2
-import mediapipe as mp
-import numpy as np
 import streamlit as st
+import cv2
+import numpy as np
+import mediapipe as mp
 from PIL import Image
 
-# 1. Cấu hình giao diện đơn giản
-st.set_page_config(page_title="AI Body Pixel Scanner", page_icon="📐", layout="centered")
-st.title("📐 AI Quét Tỷ Lệ Cơ Thể (Pixel Perfect)")
-st.markdown("---")
-
-# 2. Khởi tạo MediaPipe
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5)
-
-mp_segmentation = mp.solutions.selfie_segmentation
-segmentation = mp_segmentation.SelfieSegmentation(model_selection=1)
-
-# Hàm phóng tia từ trục giữa ra 2 bên để tìm viền cơ thể
-def find_edges_from_center(mask, center_x, y):
-    h, w = mask.shape
-    if y < 0 or y >= h:
-        return None, None
+# --- HÀM PHÂN LOẠI DÁNG NGƯỜI (Giữ nguyên) ---
+def classify_body_shape(shoulder_cm, waist_cm, hip_cm):
+    if shoulder_cm <= 0 or waist_cm <= 0 or hip_cm <= 0:
+        return "Uncertain", "Không đủ dữ liệu."
     
-    cx = int(center_x)
-    if cx < 0 or cx >= w or not mask[y, cx]:
-        return None, None  # Tâm nằm ngoài viền người
+    max_sh_hip = max(shoulder_cm, hip_cm)
+    min_sh_hip = min(shoulder_cm, hip_cm)
+    
+    if (waist_cm / shoulder_cm >= 0.85) or (waist_cm / hip_cm >= 0.85):
+        return "Apple (Dáng Quả Táo)", "Phần thân trên và eo đầy đặn. Gợi ý: Trang phục cổ chữ V, đầm dáng xòe A-line nhẹ, tránh thắt lưng quá chặt."
+    elif (shoulder_cm / hip_cm) >= 1.05:
+        return "Inverted Triangle (Tam Giác Ngược)", "Vai rộng, hông hẹp. Gợi ý: Quần ống rộng, chân váy xòe, áo đơn giản tối màu ở phần trên."
+    elif (hip_cm / shoulder_cm) >= 1.05:
+        return "Pear (Dáng Quả Lê)", "Hông nở, vai nhỏ. Gợi ý: Áo có bèo nhún/đệm vai, quần hoặc chân váy suông thẳng tối màu."
+    else:
+        if (waist_cm / min_sh_hip) <= 0.75:
+            return "Hourglass (Dáng Đồng Hồ Cát)", "Tỷ lệ chuẩn với đường thắt eo rõ. Gợi ý: Đầm ôm sát, áo chiết eo, thắt lưng tôn dáng."
+        else:
+            return "Rectangle (Dáng Chữ Nhật)", "Thân hình thẳng, đường thắt eo ít rõ. Gợi ý: Tạo điểm nhấn eo bằng thắt lưng, chân váy xếp ly, đầm xòe."
 
-    # Dò sang trái
-    left_x = cx
-    while left_x > 0 and mask[y, left_x]:
-        left_x -= 1
-        
-    # Dò sang phải
-    right_x = cx
-    while right_x < w - 1 and mask[y, right_x]:
-        right_x += 1
-        
-    return left_x, right_x
-
-# 3. Form nhập liệu (Chụp trực tiếp KHÔNG DÙNG BROWSER / Tải ảnh lên)
-st.subheader("📸 Bước 1: Chọn ảnh hoặc chụp trực tiếp")
-input_method = st.radio(
-    "Chọn phương thức nhập ảnh:",
-    ["Chụp ảnh trực tiếp (Camera)", "Tải ảnh từ thiết bị"]
-)
-
-uploaded_file = None
-if input_method == "Chụp ảnh trực tiếp (Camera)":
-    # Mở camera trực tiếp trên màn hình, không qua popup file browser
-    uploaded_file = st.camera_input("Đứng thẳng, dang nhẹ tay và chụp!")
-else:
-    uploaded_file = st.file_uploader("Chọn ảnh có sẵn (JPG, PNG)", type=["jpg", "jpeg", "png"])
-
-# 4. Khu vực xử lý chính
-if uploaded_file is not None:
-    # Đọc ảnh và chuyển sang Numpy array
-    image = Image.open(uploaded_file).convert("RGB")
-    image_np = np.array(image)
+# --- HÀM XỬ LÝ ẢNH CHÍNH ---
+def process_image(image_np, user_height_cm):
+    mp_pose = mp.solutions.pose
     h, w, _ = image_np.shape
 
-    # Chạy AI
-    with st.spinner("AI đang quét viền cơ thể..."):
-        pose_results = pose.process(image_np)
-        seg_results = segmentation.process(image_np)
-
-    if pose_results.pose_landmarks and seg_results.segmentation_mask is not None:
-        # Tạo mặt nạ nhị phân (người = True, nền = False)
-        mask = seg_results.segmentation_mask > 0.5
+    with mp_pose.Pose(
+        static_image_mode=True, model_complexity=2, enable_segmentation=True, min_detection_confidence=0.6
+    ) as pose:
+        results = pose.process(image_np)
         
-        # Lấy tọa độ xương để định hướng vùng tìm kiếm
-        lm = pose_results.pose_landmarks.landmark
-        l_sh = lm[mp_pose.PoseLandmark.LEFT_SHOULDER]
-        r_sh = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        l_hip = lm[mp_pose.PoseLandmark.LEFT_HIP]
-        r_hip = lm[mp_pose.PoseLandmark.RIGHT_HIP]
+        if not results.pose_landmarks:
+            return None, "Không phát hiện được người trong ảnh. Vui lòng chụp rõ toàn thân!"
 
-        # Tọa độ Y và X trung bình của vai và hông
-        y_sh = int((l_sh.y + r_sh.y) / 2 * h)
-        y_hip = int((l_hip.y + r_hip.y) / 2 * h)
-        x_sh_center = (l_sh.x + r_sh.x) / 2 * w
-        x_hip_center = (l_hip.x + r_hip.x) / 2 * w
-
-        # --- THUẬT TOÁN QUÉT VAI, EO, HÔNG (PIXEL) ---
-        
-        # 1. TÌM VAI (MAX width quanh khu vực vai)
-        best_sh_w = -1
-        pts_sh = None
-        for y in range(max(0, y_sh - int(h*0.05)), min(h, y_sh + int(h*0.05))):
-            lx, rx = find_edges_from_center(mask, x_sh_center, y)
-            if lx is not None and rx is not None:
-                width = rx - lx
-                if width > best_sh_w:
-                    best_sh_w = width
-                    pts_sh = ((lx, y), (rx, y))
-
-        # 2. TÌM EO (MIN width giữa ngực và bụng)
-        best_ws_w = float('inf')
-        pts_ws = None
-        for y in range(y_sh + int(h*0.12), y_hip - int(h*0.05)):
-            progress = (y - y_sh) / (y_hip - y_sh + 1e-6)
-            current_center_x = x_sh_center + (x_hip_center - x_sh_center) * progress
+        mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
+        y_indices = np.where(mask > 0)[0]
+        if len(y_indices) == 0:
+            return None, "Không trích xuất được phom dáng."
             
-            lx, rx = find_edges_from_center(mask, current_center_x, y)
-            if lx is not None and rx is not None:
-                width = rx - lx
-                if width < best_ws_w and width > 0:
-                    best_ws_w = width
-                    pts_ws = ((lx, y), (rx, y))
+        total_height_px = np.max(y_indices) - np.min(y_indices)
+        px_to_cm = user_height_cm / total_height_px if total_height_px > 0 else 0
 
-        # 3. TÌM HÔNG (MAX width quanh khu vực mông)
-        best_hp_w = -1
-        pts_hp = None
-        for y in range(y_hip - int(h*0.02), min(h, y_hip + int(h*0.15))):
-            lx, rx = find_edges_from_center(mask, x_hip_center, y)
-            if lx is not None and rx is not None:
-                width = rx - lx
-                if width > best_hp_w:
-                    best_hp_w = width
-                    pts_hp = ((lx, y), (rx, y))
+        landmarks = results.pose_landmarks.landmark
+        l_shoulder = np.array([int(landmarks[11].x * w), int(landmarks[11].y * h)])
+        r_shoulder = np.array([int(landmarks[12].x * w), int(landmarks[12].y * h)])
+        l_hip = np.array([int(landmarks[23].x * w), int(landmarks[23].y * h)])
+        r_hip = np.array([int(landmarks[24].x * w), int(landmarks[24].y * h)])
 
-        # --- VẼ LÊN ẢNH ĐỂ THỂ HIỆN TRỰC QUAN ---
-        annotated_image = image_np.copy()
-        
-        def draw_measurement(img, pts, color, label):
-            if pts:
-                p1, p2 = pts
-                # Vẽ đường nối
-                cv2.line(img, p1, p2, color, max(2, int(w*0.005)))
-                # Vẽ 2 điểm ngoài cùng (chấm tròn to rõ)
-                cv2.circle(img, p1, max(4, int(w*0.015)), color, -1)
-                cv2.circle(img, p2, max(4, int(w*0.015)), color, -1)
-                # Ghi text
-                text_pos = (int((p1[0]+p2[0])/2) - 40, p1[1] - 10)
-                cv2.putText(img, label, text_pos, cv2.FONT_HERSHEY_SIMPLEX, max(0.5, w*0.0015), color, max(1, int(w*0.003)))
+        def get_body_width_at_y(y_coord):
+            if y_coord < 0 or y_coord >= h: return 0, 0, 0
+            row = mask[y_coord, :]
+            nonzero_indices = np.where(row > 0)[0]
+            if len(nonzero_indices) > 1: return (nonzero_indices[-1] - nonzero_indices[0]), nonzero_indices[0], nonzero_indices[-1]
+            return 0, 0, 0
 
-        draw_measurement(annotated_image, pts_sh, (255, 50, 50), "VAI")   
-        draw_measurement(annotated_image, pts_ws, (50, 255, 50), "EO")    
-        draw_measurement(annotated_image, pts_hp, (50, 50, 255), "HONG")  
+        # Đo Vai
+        shoulder_width_px = int(np.linalg.norm(l_shoulder - r_shoulder))
+        shoulder_cm = round(shoulder_width_px * px_to_cm, 1)
+        y_shoulder_avg = int((l_shoulder[1] + r_shoulder[1]) / 2)
 
-        st.markdown("---")
-        st.subheader("🎯 Bước 2: Kết quả đo đạc")
-        st.image(annotated_image, channels="RGB", use_column_width=True)
+        # Đo Eo
+        y_hip_avg = int((l_hip[1] + r_hip[1]) / 2)
+        min_waist_px, waist_y, waist_x1, waist_x2 = float('inf'), -1, 0, 0
+        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.40), y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80)):
+            width, x1, x2 = get_body_width_at_y(y)
+            if 0 < width < min_waist_px: min_waist_px, waist_y, waist_x1, waist_x2 = width, y, x1, x2
+        waist_cm = round(min_waist_px * px_to_cm, 1)
 
-        st.markdown("### 📊 Thông số chi tiết (Pixel)")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("🔴 Rộng Vai", f"{best_sh_w} px" if pts_sh else "N/A")
-        c2.metric("🟢 Rộng Eo", f"{best_ws_w} px" if pts_ws else "N/A")
-        c3.metric("🔵 Rộng Hông", f"{best_hp_w} px" if pts_hp else "N/A")
+        # Đo Hông
+        max_hip_px, hip_y, hip_x1, hip_x2 = 0, -1, 0, 0
+        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80), min(h - 1, y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 1.25))):
+            width, x1, x2 = get_body_width_at_y(y)
+            if width > max_hip_px: max_hip_px, hip_y, hip_x1, hip_x2 = width, y, x1, x2
+        hip_cm = round(max_hip_px * px_to_cm, 1)
 
-    else:
-        st.error("❌ Không tìm thấy người trong ảnh. Vui lòng chụp rõ toàn thân.")
+        # Phân loại & Vẽ trực quan
+        shape_name, advice = classify_body_shape(shoulder_cm, waist_cm, hip_cm)
+        annotated_img = image_np.copy()
+        cv2.line(annotated_img, tuple(l_shoulder), tuple(r_shoulder), (0, 255, 0), 4)
+        if waist_y != -1: cv2.line(annotated_img, (waist_x1, waist_y), (waist_x2, waist_y), (255, 0, 0), 4)
+        if hip_y != -1: cv2.line(annotated_img, (hip_x1, hip_y), (hip_x2, hip_y), (0, 0, 255), 4)
+
+        result_data = {
+            "shoulder": shoulder_cm, "waist": waist_cm, "hip": hip_cm,
+            "shape": shape_name, "advice": advice
+        }
+        return annotated_img, result_data
+
+# --- GIAO DIỆN WEB VỚI STREAMLIT ---
+st.set_page_config(page_title="AI Stylist - Đo tỷ lệ cơ thể", layout="centered")
+
+st.title("👗 AI Stylist - Phân tích dáng người")
+st.write("Upload ảnh toàn thân hoặc chụp trực tiếp để AI tư vấn cách phối đồ cho bạn!")
+
+user_height = st.number_input("Nhập chiều cao của bạn (cm):", min_value=100.0, max_value=250.0, value=165.0, step=1.0)
+
+# Nút tải ảnh hỗ trợ cả chụp từ camera điện thoại
+uploaded_file = st.file_uploader("Chọn ảnh hoặc chụp ảnh mới", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Đọc ảnh từ file upload
+    image = Image.open(uploaded_file)
+    image_np = np.array(image)
+    
+    st.image(image, caption="Ảnh gốc", use_column_width=True)
+    
+    if st.button("Phân tích ngay", type="primary"):
+        with st.spinner("AI đang quét tỷ lệ cơ thể..."):
+            annotated_img, result = process_image(image_np, user_height)
+            
+            if isinstance(result, str):
+                st.error(result) # Báo lỗi nếu không thấy người
+            else:
+                st.success("Phân tích thành công!")
+                
+                # Hiển thị kết quả
+                st.image(annotated_img, caption="Ảnh AI đã quét", use_column_width=True)
+                
+                st.subheader("📊 Kết quả đo lường")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Vai", f"{result['shoulder']} cm")
+                col2.metric("Eo", f"{result['waist']} cm")
+                col3.metric("Hông", f"{result['hip']} cm")
+                
+                st.subheader("✨ Dáng người của bạn")
+                st.info(f"**{result['shape']}**")
+                
+                st.subheader("💡 Gợi ý phối đồ")
+                st.write(result['advice'])
