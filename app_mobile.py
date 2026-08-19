@@ -3,6 +3,15 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from PIL import Image
+from rembg import remove
+
+st.set_page_config(page_title="AI Stylist & Phòng Thử Đồ", layout="wide")
+
+# Bộ nhớ lưu Tủ đồ trong Session
+if "user_tops" not in st.session_state:
+    st.session_state["user_tops"] = []
+if "user_bottoms" not in st.session_state:
+    st.session_state["user_bottoms"] = []
 
 # ==========================================
 # 1. HÀM PHÂN LOẠI DÁNG NGƯỜI
@@ -11,119 +20,47 @@ def classify_body_shape(shoulder_cm, waist_cm, hip_cm):
     if shoulder_cm <= 0 or waist_cm <= 0 or hip_cm <= 0:
         return "Uncertain", "Không đủ dữ liệu."
     
-    max_sh_hip = max(shoulder_cm, hip_cm)
-    min_sh_hip = min(shoulder_cm, hip_cm)
-    
     if (waist_cm / shoulder_cm >= 0.85) or (waist_cm / hip_cm >= 0.85):
-        return "Apple (Dáng Quả Táo)", "Phần thân trên và eo đầy đặn. Gợi ý: Trang phục cổ chữ V, đầm dáng xòe A-line nhẹ, tránh thắt lưng quá chặt."
+        return "Apple (Dáng Quả Táo)", "Phần thân trên và eo đầy đặn. Nên chọn áo cổ V, đầm dáng xòe nhẹ."
     elif (shoulder_cm / hip_cm) >= 1.05:
-        return "Inverted Triangle (Tam Giác Ngược)", "Vai rộng, hông hẹp. Gợi ý: Quần ống rộng, chân váy xòe, áo đơn giản tối màu ở phần trên."
+        return "Inverted Triangle (Tam Giác Ngược)", "Vai rộng, hông hẹp. Nên mặc quần ống rộng, chân váy xếp ly."
     elif (hip_cm / shoulder_cm) >= 1.05:
-        return "Pear (Dáng Quả Lê)", "Hông nở, vai nhỏ. Gợi ý: Áo có bèo nhún/đệm vai, quần hoặc chân váy suông thẳng tối màu."
+        return "Pear (Dáng Quả Lê)", "Hông nở, vai nhỏ. Nên chọn áo bèo nhún/trễ vai, quần suông tối màu."
     else:
-        if (waist_cm / min_sh_hip) <= 0.75:
-            return "Hourglass (Dáng Đồng Hồ Cát)", "Tỷ lệ chuẩn với đường thắt eo rõ. Gợi ý: Đầm ôm sát, áo chiết eo, thắt lưng tôn dáng."
+        if (waist_cm / min(shoulder_cm, hip_cm)) <= 0.75:
+            return "Hourglass (Dáng Đồng Hồ Cát)", "Tỷ lệ chuẩn thắt eo rõ. Hãy chọn đầm ôm sát, áo chiết eo."
         else:
-            return "Rectangle (Dáng Chữ Nhật)", "Thân hình thẳng, đường thắt eo ít rõ. Gợi ý: Tạo điểm nhấn eo bằng thắt lưng, chân váy xếp ly, đầm xòe."
+            return "Rectangle (Dáng Chữ Nhật)", "Thân hình thẳng. Nên tạo điểm nhấn bằng thắt lưng, chân váy xòe."
 
 # ==========================================
-# 2. CƠ SỞ DỮ LIỆU TỦ ĐỒ (ĐÃ ĐIỀN VÀO ĐÂY)
+# 2. HÀM TÁCH NỀN QUẦN ÁO
 # ==========================================
-WARDROBE_DB = {
-    "Hourglass (Dáng Đồng Hồ Cát)": {
-        "👕 Áo / Tops": [
-            {"name": "Áo thun/cổ vuông ôm sát", "desc": "Tôn đường thắt eo tự nhiên và phần vai cân đối."},
-            {"name": "Áo sơ mi chiết eo / Wrap top", "desc": "Tạo điểm nhấn tối đa vào vòng 2."}
-        ],
-        "👖 Quần & Chân váy": [
-            {"name": "Quần Jean/Tây cạp cao", "desc": "Kéo dài chân và ôm trọn phần hông chuẩn."},
-            {"name": "Chân váy bút chì / Váy đuôi cá", "desc": "Khoe trọn đường cong từ eo xuống hông."}
-        ],
-        "👗 Đầm liền": [
-            {"name": "Đầm Wrap Dress (Đầm quấn)", "desc": "Thiết kế kinh điển hoàn hảo nhất cho dáng đồng hồ cát."},
-            {"name": "Đầm Bodycon ôm sát", "desc": "Tôn trọn vẹn 3 vòng."}
-        ]
-    },
-    "Pear (Dáng Quả Lê)": {
-        "👕 Áo / Tops": [
-            {"name": "Áo trễ vai / Có bèo nhún vai", "desc": "Tạo cảm giác vai rộng hơn để cân bằng với hông."},
-            {"name": "Áo có họa tiết nổi bật/màu sáng", "desc": "Thu hút ánh nhìn vào phần thân trên."}
-        ],
-        "👖 Quần & Chân váy": [
-            {"name": "Quần ống suông/ống rộng tối màu", "desc": "Che khuyết điểm hông đùi to, tạo nét thanh thoát."},
-            {"name": "Chân váy chữ A (A-line)", "desc": "Xòe nhẹ từ eo xuống, che hông nở cực tốt."}
-        ],
-        "👗 Đầm liền": [
-            {"name": "Đầm xòe chữ A nhấn eo", "desc": "Tập trung vào eo nhỏ và che đi phần hông."}
-        ]
-    },
-    "Inverted Triangle (Tam Giác Ngược)": {
-        "👕 Áo / Tops": [
-            {"name": "Áo cổ chữ V sâu / Cổ tim", "desc": "Thu hẹp phần vai rộng, tạo cảm giác thân trên thon gọn."},
-            {"name": "Áo tay Raglan / Áo tối màu", "desc": "Giảm độ chú ý vào khung vai."}
-        ],
-        "👖 Quần & Chân váy": [
-            {"name": "Quần Cargo / Quần ống rộng cạp cao", "desc": "Tạo độ phồng phần dưới để cân bằng với vai."},
-            {"name": "Chân váy xếp ly / Váy xòe tròn", "desc": "Tăng kích thước thị giác cho hông."}
-        ],
-        "👗 Đầm liền": [
-            {"name": "Đầm Peplum / Đầm hạ eo", "desc": "Tạo thêm độ nẩy cho hông."}
-        ]
-    },
-    "Rectangle (Dáng Chữ Nhật)": {
-        "👕 Áo / Tops": [
-            {"name": "Áo Croptop / Áo cổ đổ", "desc": "Tạo đường cong giả cho phần thân trên."},
-            {"name": "Áo nhún eo / Có thắt lưng", "desc": "Tạo cảm giác có thắt eo."}
-        ],
-        "👖 Quần & Chân váy": [
-            {"name": "Chân váy tầng / Váy xòe phồng", "desc": "Tạo độ nẩy cho hông."},
-            {"name": "Quần Baggy / Quần tây xếp li", "desc": "Giúp phần mông và hông đầy đặn hơn."}
-        ],
-        "👗 Đầm liền": [
-            {"name": "Đầm thắt thắt lưng / Đầm xòe công chúa", "desc": "Chia lại tỷ lệ cơ thể rõ ràng."}
-        ]
-    },
-    "Apple (Dáng Quả Táo)": {
-        "👕 Áo / Tops": [
-            {"name": "Áo cổ chữ V dáng rủ", "desc": "Kéo dài phần cổ và ngực, giấu bụng."},
-            {"name": "Áo khoác Blazer dáng dài (mở cúc)", "desc": "Tạo 2 đường dọc kéo dài cơ thể."}
-        ],
-        "👖 Quần & Chân váy": [
-            {"name": "Quần ống đứng / Quần Bootcut", "desc": "Khoe đôi chân thon gọn đặc trưng."},
-            {"name": "Chân váy chữ A cạp vừa", "desc": "Giữ phần bụng thoải mái mà vẫn xòe nhẹ."}
-        ],
-        "👗 Đầm liền": [
-            {"name": "Đầm Suông / Đầm Empire", "desc": "Giấu hoàn toàn vòng eo đầy đặn."}
-        ]
-    }
-}
+def process_clothing_item(img_pil):
+    return remove(img_pil)
 
 # ==========================================
-# 3. HÀM XỬ LÝ ẢNH CHÍNH
+# 3. HÀM QUÉT AI & ĐO CƠ THỂ (GIỮ NGUYÊN VẼ VẠCH)
 # ==========================================
-def process_image(image_np, user_height_cm):
+def analyze_full_body(image_np, user_height_cm):
     mp_pose = mp.solutions.pose
     h, w, _ = image_np.shape
 
-    with mp_pose.Pose(
-        static_image_mode=True, model_complexity=1, enable_segmentation=True, min_detection_confidence=0.6
-    ) as pose:
+    with mp_pose.Pose(static_image_mode=True, model_complexity=1, enable_segmentation=True, min_detection_confidence=0.6) as pose:
         results = pose.process(image_np)
-        
         if not results.pose_landmarks:
-            return None, "Không phát hiện được người trong ảnh. Vui lòng chụp rõ toàn thân!"
+            return None, None, "Không tìm thấy dáng người trong ảnh!"
 
         mask = (results.segmentation_mask > 0.5).astype(np.uint8) * 255
         y_indices = np.where(mask > 0)[0]
         if len(y_indices) == 0:
-            return None, "Không trích xuất được phom dáng."
+            return None, None, "Không trích xuất được phom dáng."
             
         total_height_px = np.max(y_indices) - np.min(y_indices)
         px_to_cm = user_height_cm / total_height_px if total_height_px > 0 else 0
 
         landmarks = results.pose_landmarks.landmark
-        l_shoulder = np.array([int(landmarks[11].x * w), int(landmarks[11].y * h)])
-        r_shoulder = np.array([int(landmarks[12].x * w), int(landmarks[12].y * h)])
+        l_sh = np.array([int(landmarks[11].x * w), int(landmarks[11].y * h)])
+        r_sh = np.array([int(landmarks[12].x * w), int(landmarks[12].y * h)])
         l_hip = np.array([int(landmarks[23].x * w), int(landmarks[23].y * h)])
         r_hip = np.array([int(landmarks[24].x * w), int(landmarks[24].y * h)])
 
@@ -132,109 +69,172 @@ def process_image(image_np, user_height_cm):
             row = mask[y_coord, :]
             cx = int(center_x)
             if cx < 0 or cx >= w or row[cx] == 0: return 0, 0, 0
-            
-            x1 = cx
+            x1, x2 = cx, cx
             while x1 > 0 and row[x1] > 0: x1 -= 1
-            x2 = cx
             while x2 < w - 1 and row[x2] > 0: x2 += 1
             return (x2 - x1), x1, x2
 
-        y_shoulder_avg = int((l_shoulder[1] + r_shoulder[1]) / 2)
+        y_sh_avg = int((l_sh[1] + r_sh[1]) / 2)
         y_hip_avg = int((l_hip[1] + r_hip[1]) / 2)
-        x_sh_center = (l_shoulder[0] + r_shoulder[0]) / 2
+        x_sh_center = (l_sh[0] + r_sh[0]) / 2
         x_hip_center = (l_hip[0] + r_hip[0]) / 2
 
-        # 1. Đo Vai
-        sh_distance_px = int(np.linalg.norm(l_shoulder - r_shoulder))
-        shoulder_width_px = int(sh_distance_px * 1.20) 
+        # Đo Vai
+        sh_distance_px = int(np.linalg.norm(l_sh - r_sh))
+        shoulder_width_px = int(sh_distance_px * 1.20)
         shoulder_cm = round(shoulder_width_px * px_to_cm, 1)
-        sh_y = y_shoulder_avg
         sh_x1 = int(x_sh_center - (shoulder_width_px / 2))
         sh_x2 = int(x_sh_center + (shoulder_width_px / 2))
 
-        # 2. Đo Eo
-        min_waist_px, waist_y, waist_x1, waist_x2 = float('inf'), -1, 0, 0
-        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.30), y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80)):
-            progress = (y - y_shoulder_avg) / (y_hip_avg - y_shoulder_avg + 1e-6)
+        # Đo Eo
+        min_waist_px, waist_y, w_x1, w_x2 = float('inf'), -1, 0, 0
+        for y in range(y_sh_avg + int((y_hip_avg - y_sh_avg) * 0.30), y_sh_avg + int((y_hip_avg - y_sh_avg) * 0.80)):
+            progress = (y - y_sh_avg) / (y_hip_avg - y_sh_avg + 1e-6)
             cx = x_sh_center + (x_hip_center - x_sh_center) * progress
             width, x1, x2 = get_body_width_from_center(y, cx)
-            if 0 < width < min_waist_px: min_waist_px, waist_y, waist_x1, waist_x2 = width, y, x1, x2
+            if 0 < width < min_waist_px: min_waist_px, waist_y, w_x1, w_x2 = width, y, x1, x2
         if min_waist_px == float('inf'): min_waist_px = 0
         waist_cm = round(min_waist_px * px_to_cm, 1)
 
-        # 3. Đo Hông
-        max_hip_px, hip_y, hip_x1, hip_x2 = 0, -1, 0, 0
-        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80), min(h - 1, y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 1.25))):
+        # Đo Hông
+        max_hip_px, hip_y, h_x1, h_x2 = 0, -1, 0, 0
+        for y in range(y_sh_avg + int((y_hip_avg - y_sh_avg) * 0.80), min(h - 1, y_sh_avg + int((y_hip_avg - y_sh_avg) * 1.25))):
             width, x1, x2 = get_body_width_from_center(y, x_hip_center)
-            if width > max_hip_px: max_hip_px, hip_y, hip_x1, hip_x2 = width, y, x1, x2
+            if width > max_hip_px: max_hip_px, hip_y, h_x1, h_x2 = width, y, x1, x2
         hip_cm = round(max_hip_px * px_to_cm, 1)
 
         shape_name, advice = classify_body_shape(shoulder_cm, waist_cm, hip_cm)
+
+        # Vẽ 3 đường kẻ màu (Xanh lá - Vai, Xanh dương - Eo, Đỏ - Hông)
         annotated_img = image_np.copy()
-        
-        cv2.line(annotated_img, (sh_x1, sh_y), (sh_x2, sh_y), (0, 255, 0), 4)
-        if waist_y != -1: cv2.line(annotated_img, (waist_x1, waist_y), (waist_x2, waist_y), (255, 0, 0), 4)
-        if hip_y != -1: cv2.line(annotated_img, (hip_x1, hip_y), (hip_x2, hip_y), (0, 0, 255), 4)
+        cv2.line(annotated_img, (sh_x1, y_sh_avg), (sh_x2, y_sh_avg), (0, 255, 0), 4)
+        if waist_y != -1: cv2.line(annotated_img, (w_x1, waist_y), (w_x2, waist_y), (255, 0, 0), 4)
+        if hip_y != -1: cv2.line(annotated_img, (h_x1, hip_y), (h_x2, hip_y), (0, 0, 255), 4)
 
         result_data = {
             "shoulder": shoulder_cm, "waist": waist_cm, "hip": hip_cm,
-            "shape": shape_name, "advice": advice
+            "shape": shape_name, "advice": advice,
+            "sh_center": (int(x_sh_center), y_sh_avg),
+            "hip_center": (int(x_hip_center), y_hip_avg),
+            "sh_width_px": shoulder_width_px,
+            "hip_width_px": max_hip_px if max_hip_px > 0 else int(np.linalg.norm(l_hip - r_hip) * 1.2)
         }
-        return annotated_img, result_data
+        return annotated_img, result_data, "OK"
 
 # ==========================================
-# 4. GIAO DIỆN WEB VỚI STREAMLIT & TỦ ĐỒ
+# 4. HÀM MẶC THỬ ĐỒ TRÊN KHUNG XƯƠNG
 # ==========================================
-st.set_page_config(page_title="AI Stylist - Đo tỷ lệ cơ thể", layout="centered")
-
-st.title("👗 AI Stylist - Phân tích dáng người")
-st.write("Upload ảnh toàn thân hoặc chụp trực tiếp để AI tư vấn cách phối đồ cho bạn!")
-
-user_height = st.number_input("Nhập chiều cao của bạn (cm):", min_value=100.0, max_value=250.0, value=165.0, step=1.0)
-uploaded_file = st.file_uploader("Chọn ảnh hoặc chụp ảnh mới", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    image_np = np.array(image)
+def overlay_clothing(body_pil, pose_data, top_pil=None, bottom_pil=None):
+    base_img = body_pil.convert("RGBA")
     
-    st.image(image, caption="Ảnh gốc", use_column_width=True)
-    
-    if st.button("Phân tích ngay", type="primary"):
-        with st.spinner("AI đang quét tỷ lệ cơ thể..."):
-            annotated_img, result = process_image(image_np, user_height)
-            
-            if isinstance(result, str):
-                st.error(result)
+    if top_pil is not None:
+        top_img = top_pil.convert("RGBA")
+        target_w = pose_data["sh_width_px"]
+        target_h = int(target_w * (top_img.height / top_img.width))
+        resized_top = top_img.resize((target_w, target_h))
+        pos_x = pose_data["sh_center"][0] - (target_w // 2)
+        pos_y = pose_data["sh_center"][1] - int(target_h * 0.15)
+        base_img.paste(resized_top, (pos_x, pos_y), resized_top)
+
+    if bottom_pil is not None:
+        bot_img = bottom_pil.convert("RGBA")
+        target_w = pose_data["hip_width_px"]
+        target_h = int(target_w * (bot_img.height / bot_img.width))
+        resized_bot = bot_img.resize((target_w, target_h))
+        pos_x = pose_data["hip_center"][0] - (target_w // 2)
+        pos_y = pose_data["hip_center"][1] - int(target_h * 0.10)
+        base_img.paste(resized_bot, (pos_x, pos_y), resized_bot)
+
+    return base_img
+
+# ==========================================
+# 5. GIAO DIỆN WEB STREAMLIT
+# ==========================================
+st.title("👗 AI Stylist: Phân Tích Dáng & Phòng Thử Đồ Ảo")
+
+tab1, tab2, tab3 = st.tabs(["📐 1. Quét Dáng & Số Đo AI", "📸 2. Tủ Đồ (Thêm & Tách Nền)", "🪞 3. Phòng Thử Đồ Ảo"])
+
+# TAB 1: ĐO SỐ ĐO VÀ CHẨN ĐOÁN DÁNG NGƯỜI
+with tab1:
+    st.subheader("Chụp/Upload ảnh toàn thân để AI đo 3 vòng")
+    u_height = st.number_input("Chiều cao của bạn (cm):", 100.0, 250.0, 165.0, 1.0)
+    body_file = st.file_uploader("Tải ảnh toàn thân đứng thẳng", type=["jpg", "png", "jpeg"], key="body_scan")
+
+    if body_file and st.button("Phân Tích Dáng Ngay", type="primary"):
+        with st.spinner("AI đang tính toán chỉ số & quét phom dáng..."):
+            img_pil = Image.open(body_file)
+            img_np = np.array(img_pil)
+            ann_img, res, msg = analyze_full_body(img_np, u_height)
+
+            if res is None:
+                st.error(msg)
             else:
-                st.success("Phân tích thành công!")
-                st.image(annotated_img, caption="Ảnh AI đã quét", use_column_width=True)
-                
-                st.subheader("📊 Kết quả đo lường")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Vai", f"{result['shoulder']} cm")
-                col2.metric("Eo", f"{result['waist']} cm")
-                col3.metric("Hông", f"{result['hip']} cm")
-                
-                st.subheader("✨ Dáng người của bạn")
-                st.info(f"**{result['shape']}**")
-                
-                # HIỂN THỊ TỦ ĐỒ THEO TABS VÀO ĐÂY
-                st.subheader("🛍️ Tủ đồ gợi ý riêng cho bạn")
-                shape_key = result['shape']
-                
-                if shape_key in WARDROBE_DB:
-                    wardrobe = WARDROBE_DB[shape_key]
-                    tab1, tab2, tab3 = st.tabs(["👕 Áo đề xuất", "👖 Quần & Chân váy", "👗 Đầm liền"])
-                    
-                    with tab1:
-                        for item in wardrobe["👕 Áo / Tops"]:
-                            st.success(f"**{item['name']}**")
-                            st.caption(f"💡 *Lý do chọn:* {item['desc']}")
-                    with tab2:
-                        for item in wardrobe["👖 Quần & Chân váy"]:
-                            st.info(f"**{item['name']}**")
-                            st.caption(f"💡 *Lý do chọn:* {item['desc']}")
-                    with tab3:
-                        for item in wardrobe["👗 Đầm liền"]:
-                            st.warning(f"**{item['name']}**")
-                            st.caption(f"💡 *Lý do chọn:* {item['desc']}")
+                st.session_state["scanned_body_pil"] = img_pil
+                st.session_state["scanned_pose_data"] = res
+
+                col_a, col_b = st.columns([1, 1])
+                with col_a:
+                    st.image(ann_img, caption="Kết quả quét tỷ lệ khung xương", use_column_width=True)
+                with col_b:
+                    st.subheader("📊 Số đo ước tính")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Vai", f"{res['shoulder']} cm")
+                    c2.metric("Eo", f"{res['waist']} cm")
+                    c3.metric("Hông", f"{res['hip']} cm")
+
+                    st.subheader("✨ Dáng người của bạn")
+                    st.info(f"**{res['shape']}**")
+                    st.write(f"💡 **Tư vấn stylist:** {res['advice']}")
+
+# TAB 2: THÊM ĐỒ VÀO TỦ & TÁCH NỀN TỰ ĐỘNG
+with tab2:
+    st.subheader("Tải ảnh quần/áo thực tế của bạn lên")
+    c_type = st.radio("Loại trang phục:", ["Áo (Tops)", "Quần / Chân váy (Bottoms)"], horizontal=True)
+    c_file = st.file_uploader("Chụp/Upload ảnh trang phục", type=["jpg", "png", "jpeg"], key="cloth_upload")
+
+    if c_file and st.button("Tách nền & Lưu tủ đồ"):
+        with st.spinner("AI đang loại bỏ phông nền..."):
+            raw_c = Image.open(c_file)
+            clean_c = process_clothing_item(raw_c)
+            if "Áo" in c_type:
+                st.session_state["user_tops"].append(clean_c)
+                st.success("Đã thêm Áo vào Tủ đồ!")
+            else:
+                st.session_state["user_bottoms"].append(clean_c)
+                st.success("Đã thêm Quần/Váy vào Tủ đồ!")
+
+# TAB 3: PHÒNG THỬ ĐỒ ẢO (MẶC ĐỒ LÊN NGUỜI)
+with tab3:
+    st.subheader("Mặc thử quần áo thực tế lên phom dáng của bạn")
+    if "scanned_body_pil" not in st.session_state:
+        st.warning("⚠️ Bạn cần sang **Tab 1** tải ảnh và bấm 'Phân Tích Dáng Ngay' trước!")
+    else:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.write("**1. Chọn Áo từ tủ:**")
+            sel_top = None
+            if len(st.session_state["user_tops"]) > 0:
+                t_idx = st.selectbox("Danh sách Áo:", range(len(st.session_state["user_tops"])), format_func=lambda x: f"Áo {x+1}")
+                sel_top = st.session_state["user_tops"][t_idx]
+                st.image(sel_top, width=100)
+            else:
+                st.info("Chưa có áo nào. Hãy sang Tab 2 tải áo lên!")
+
+            st.write("**2. Chọn Quần/Váy từ tủ:**")
+            sel_bot = None
+            if len(st.session_state["user_bottoms"]) > 0:
+                b_idx = st.selectbox("Danh sách Quần/Váy:", range(len(st.session_state["user_bottoms"])), format_func=lambda x: f"Món {x+1}")
+                sel_bot = st.session_state["user_bottoms"][b_idx]
+                st.image(sel_bot, width=100)
+            else:
+                st.info("Chưa có quần/váy nào.")
+
+        with col2:
+            st.write("**🖼️ Kết quả Mặc thử (Virtual Try-On):**")
+            fitted = overlay_clothing(
+                st.session_state["scanned_body_pil"],
+                st.session_state["scanned_pose_data"],
+                sel_top,
+                sel_bot
+            )
+            st.image(fitted, caption="Phòng thử đồ ảo", use_column_width=True)
