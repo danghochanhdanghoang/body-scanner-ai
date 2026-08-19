@@ -29,9 +29,13 @@ def process_image(image_np, user_height_cm):
     mp_pose = mp.solutions.pose
     h, w, _ = image_np.shape
 
+    # --- SỬA LỖI Ở ĐÂY ---
+    # Thay đổi model_complexity từ 2 thành 1
+    # Độ phức tạp 1 hoạt động tốt trong hầu hết các môi trường lưu trữ bị hạn chế
     with mp_pose.Pose(
-        static_image_mode=True, model_complexity=2, enable_segmentation=True, min_detection_confidence=0.6
+        static_image_mode=True, model_complexity=1, enable_segmentation=True, min_detection_confidence=0.6
     ) as pose:
+    # --- KẾT THÚC ĐOẠN SỬA LỖI ---
         results = pose.process(image_np)
         
         if not results.pose_landmarks:
@@ -91,7 +95,7 @@ def process_image(image_np, user_height_cm):
         }
         return annotated_img, result_data
 
-# --- GIAO DIỆN WEB VỚI STREAMLIT ---
+# --- GIAO DIỆN WEB VỚI STREAMLIT (Giữ nguyên) ---
 st.set_page_config(page_title="AI Stylist - Đo tỷ lệ cơ thể", layout="centered")
 
 st.title("👗 AI Stylist - Phân tích dáng người")
