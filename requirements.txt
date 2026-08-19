@@ -2,3 +2,6 @@ streamlit==1.27.0
 opencv-python-headless
 mediapipe==0.10.9
 streamlit-drawable-canvas==0.9.3
+numpy
+Pillow
+rembg
