@@ -51,57 +51,47 @@ def process_image(image_np, user_height_cm):
         l_hip = np.array([int(landmarks[23].x * w), int(landmarks[23].y * h)])
         r_hip = np.array([int(landmarks[24].x * w), int(landmarks[24].y * h)])
 
-        # 🚀 THUẬT TOÁN MỚI: Quét từ trục xương sống ra 2 bên, chạm viền (gap) là DỪNG.
+        # Thuật toán dò tia từ tâm
         def get_body_width_from_center(y_coord, center_x):
             if y_coord < 0 or y_coord >= h: return 0, 0, 0
             row = mask[y_coord, :]
             cx = int(center_x)
+            if cx < 0 or cx >= w or row[cx] == 0: return 0, 0, 0
             
-            # Nếu tâm điểm bị rỗng (ngoài mask), bỏ qua
-            if cx < 0 or cx >= w or row[cx] == 0: 
-                return 0, 0, 0
-            
-            # Dò sang trái đến khi chạm rìa người (pixel đen)
             x1 = cx
-            while x1 > 0 and row[x1] > 0:
-                x1 -= 1
-                
-            # Dò sang phải đến khi chạm rìa người (pixel đen)
+            while x1 > 0 and row[x1] > 0: x1 -= 1
             x2 = cx
-            while x2 < w - 1 and row[x2] > 0:
-                x2 += 1
-                
+            while x2 < w - 1 and row[x2] > 0: x2 += 1
             return (x2 - x1), x1, x2
 
-        # Lấy tọa độ trung tâm (Xương sống)
         y_shoulder_avg = int((l_shoulder[1] + r_shoulder[1]) / 2)
         y_hip_avg = int((l_hip[1] + r_hip[1]) / 2)
         x_sh_center = (l_shoulder[0] + r_shoulder[0]) / 2
         x_hip_center = (l_hip[0] + r_hip[0]) / 2
 
-        # 1. Đo Vai (Rộng nhất quanh vùng vai)
-        max_sh_px, sh_y, sh_x1, sh_x2 = 0, -1, 0, 0
-        for y in range(max(0, y_shoulder_avg - int(h*0.05)), min(h, y_shoulder_avg + int(h*0.05))):
-            width, x1, x2 = get_body_width_from_center(y, x_sh_center)
-            if width > max_sh_px: max_sh_px, sh_y, sh_x1, sh_x2 = width, y, x1, x2
-        shoulder_cm = round(max_sh_px * px_to_cm, 1)
+        # 1. ĐO VAI (Sửa lại: Tính từ khớp xương + 20% bù thịt/áo, không quét mask)
+        sh_distance_px = int(np.linalg.norm(l_shoulder - r_shoulder))
+        shoulder_width_px = int(sh_distance_px * 1.20) 
+        shoulder_cm = round(shoulder_width_px * px_to_cm, 1)
+        
+        sh_y = y_shoulder_avg
+        sh_x1 = int(x_sh_center - (shoulder_width_px / 2))
+        sh_x2 = int(x_sh_center + (shoulder_width_px / 2))
 
-        # 2. Đo Eo (Nhỏ nhất giữa ngực và bụng)
+        # 2. ĐO EO (Quét tia - Đang hoạt động cực tốt)
         min_waist_px, waist_y, waist_x1, waist_x2 = float('inf'), -1, 0, 0
         for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.30), y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80)):
-            # Tịnh tiến trục tâm theo xương sống (chống lệch nếu người đứng nghiêng)
             progress = (y - y_shoulder_avg) / (y_hip_avg - y_shoulder_avg + 1e-6)
             cx = x_sh_center + (x_hip_center - x_sh_center) * progress
-            
             width, x1, x2 = get_body_width_from_center(y, cx)
             if 0 < width < min_waist_px: min_waist_px, waist_y, waist_x1, waist_x2 = width, y, x1, x2
         
         if min_waist_px == float('inf'): min_waist_px = 0
         waist_cm = round(min_waist_px * px_to_cm, 1)
 
-        # 3. Đo Hông (Rộng nhất quanh vùng hông/mông)
+        # 3. ĐO HÔNG (Quét tia - Rút ngắn vùng quét để không bị tụt xuống đùi/ống quần)
         max_hip_px, hip_y, hip_x1, hip_x2 = 0, -1, 0, 0
-        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80), min(h - 1, y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 1.40))):
+        for y in range(y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 0.80), min(h - 1, y_shoulder_avg + int((y_hip_avg - y_shoulder_avg) * 1.25))):
             width, x1, x2 = get_body_width_from_center(y, x_hip_center)
             if width > max_hip_px: max_hip_px, hip_y, hip_x1, hip_x2 = width, y, x1, x2
         hip_cm = round(max_hip_px * px_to_cm, 1)
@@ -110,8 +100,7 @@ def process_image(image_np, user_height_cm):
         shape_name, advice = classify_body_shape(shoulder_cm, waist_cm, hip_cm)
         annotated_img = image_np.copy()
         
-        # Vẽ lại 3 đường chuẩn xác dựa trên rìa cơ thể
-        if sh_y != -1: cv2.line(annotated_img, (sh_x1, sh_y), (sh_x2, sh_y), (0, 255, 0), 4) # Xanh lá - Vai
+        cv2.line(annotated_img, (sh_x1, sh_y), (sh_x2, sh_y), (0, 255, 0), 4) # Xanh lá - Vai
         if waist_y != -1: cv2.line(annotated_img, (waist_x1, waist_y), (waist_x2, waist_y), (255, 0, 0), 4) # Xanh dương - Eo
         if hip_y != -1: cv2.line(annotated_img, (hip_x1, hip_y), (hip_x2, hip_y), (0, 0, 255), 4) # Đỏ - Hông
 
